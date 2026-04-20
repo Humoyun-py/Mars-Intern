@@ -10,6 +10,7 @@ from aiogram.filters import CommandStart
 
 from database import db
 from interns import INTERNS
+from keyboards import get_main_keyboard
 
 
 class AdminStates(StatesGroup):
@@ -367,11 +368,14 @@ async def admin_excel_callback(query: CallbackQuery):
         excel_path = DATABASE_FILE.parent / f"lessons_export_{date.today().strftime('%d_%m_%Y')}.xlsx"
         df.to_excel(excel_path, index=False, sheet_name='Darslar')
         
-        await query.answer(f"✅ Eksport bajarildi: {excel_path.name}")
-        await query.message.answer(f"📥 Fayl saqlandi:\n<code>{excel_path}</code>")
+        excel_msg = f"✅ Eksport bajarildi:\n<code>{excel_path.name}</code>"
+        await query.message.edit_text(excel_msg, reply_markup=get_back_keyboard())
+        await query.answer()
         db.add_log(query.from_user.id, "excel_exported")
     except Exception as e:
-        await query.answer(f"❌ Xato: {str(e)}", show_alert=True)
+        error_msg = f"❌ Xato: {str(e)}"
+        await query.message.edit_text(error_msg, reply_markup=get_back_keyboard())
+        await query.answer()
 
 
 @admin_router.callback_query(F.data == "admin_logs")
@@ -413,6 +417,12 @@ async def process_search(message: Message, state: FSMContext):
     """Process intern search"""
     intern_name = message.text.strip()
     
+    # Check for cancel command
+    if intern_name.lower() == "bekor":
+        await message.answer("Bekor qilindi.", reply_markup=get_main_keyboard())
+        await state.clear()
+        return
+    
     reports = db.get_reports_by_intern(intern_name, days=30)
     
     if not reports:
@@ -430,7 +440,11 @@ async def process_search(message: Message, state: FSMContext):
                 search_text += f"   {report['absence_reason']}\n"
             search_text += "\n"
         
-        await message.answer(search_text)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
+        ])
+        
+        await message.answer(search_text, reply_markup=keyboard)
         db.add_log(message.from_user.id, "search_report", f"Intern: {intern_name}")
     
     await state.clear()
@@ -451,6 +465,12 @@ async def admin_delete_callback(query: CallbackQuery, state: FSMContext):
 @admin_router.message(AdminStates.deleting_report)
 async def process_delete(message: Message, state: FSMContext):
     """Process report deletion"""
+    # Check for cancel command
+    if message.text.strip().lower() == "bekor":
+        await message.answer("Bekor qilindi.", reply_markup=get_main_keyboard())
+        await state.clear()
+        return
+    
     parts = message.text.split(" ", 1)
     if len(parts) < 2:
         await message.answer("❌ Tog'ri format: Ism Familiya DD.MM.YYYY")
@@ -459,15 +479,22 @@ async def process_delete(message: Message, state: FSMContext):
     intern_name = parts[0]
     date_str = parts[1]
     
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
+    ])
+    
     try:
         report_date = date.strptime(date_str, "%d.%m.%Y")
         if db.delete_report(intern_name, report_date):
-            await message.answer(f"✅ Hisobot o'chirildi: {intern_name} ({date_str})")
+            result_msg = f"✅ Hisobot o'chirildi: {intern_name} ({date_str})"
+            await message.answer(result_msg, reply_markup=keyboard)
             db.add_log(message.from_user.id, "report_deleted", f"{intern_name} on {date_str}")
         else:
-            await message.answer("❌ Hisobot o'chirilmadi")
+            result_msg = "❌ Hisobot o'chirilmadi"
+            await message.answer(result_msg, reply_markup=keyboard)
     except ValueError:
-        await message.answer("❌ Sana formati xato (DD.MM.YYYY ishlatilsin)")
+        result_msg = "❌ Sana formati xato (DD.MM.YYYY ishlatilsin)"
+        await message.answer(result_msg, reply_markup=keyboard)
     
     await state.clear()
 
@@ -487,15 +514,28 @@ async def admin_add_callback(query: CallbackQuery, state: FSMContext):
 @admin_router.message(AdminStates.adding_admin)
 async def process_add_admin(message: Message, state: FSMContext):
     """Process adding new admin"""
+    # Check for cancel command
+    if message.text.strip().lower() == "bekor":
+        await message.answer("Bekor qilindi.", reply_markup=get_main_keyboard())
+        await state.clear()
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
+    ])
+    
     try:
         new_admin_id = int(message.text)
         if db.add_admin(new_admin_id):
-            await message.answer(f"✅ Admin qo'shildi: {new_admin_id}")
+            result_msg = f"✅ Admin qo'shildi: {new_admin_id}"
+            await message.answer(result_msg, reply_markup=keyboard)
             db.add_log(message.from_user.id, "admin_added", f"Admin ID: {new_admin_id}")
         else:
-            await message.answer("❌ Admin qo'shilmadi (Balki allaqachon admin)")
+            result_msg = "❌ Admin qo'shilmadi (Balki allaqachon admin)"
+            await message.answer(result_msg, reply_markup=keyboard)
     except ValueError:
-        await message.answer("❌ User ID raqam bo'lishi kerak")
+        result_msg = "❌ User ID raqam bo'lishi kerak"
+        await message.answer(result_msg, reply_markup=keyboard)
     
     await state.clear()
 
