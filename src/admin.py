@@ -259,11 +259,35 @@ async def admin_work_stats_callback(query: CallbackQuery):
     
     # Group by intern
     intern_data = {}
+    intern_totals = {}
     for session in work_sessions:
         intern = session['intern_name']
         if intern not in intern_data:
             intern_data[intern] = []
+            intern_totals[intern] = {'completed': 0, 'active': False}
         intern_data[intern].append(session)
+        
+        # Calculate totals
+        if session['status'] == 'completed' and session.get('duration_minutes'):
+            intern_totals[intern]['completed'] += session['duration_minutes']
+        elif session['status'] == 'active':
+            intern_totals[intern]['active'] = True
+    
+    # Display summary first
+    work_text += "📊 QISQA XULOSA\n"
+    for intern_name in sorted(intern_totals.keys()):
+        total_min = intern_totals[intern_name]['completed']
+        is_active = intern_totals[intern_name]['active']
+        hours = total_min // 60
+        minutes = total_min % 60
+        
+        if is_active:
+            work_text += f"   🟢 {intern_name}: {hours}h {minutes}m + (davom...)\n"
+        else:
+            work_text += f"   ⚪ {intern_name}: {hours}h {minutes}m\n"
+    
+    work_text += "\n" + "="*40 + "\n\n"
+    work_text += "📝 BATAFSIL\n\n"
     
     # Display grouped data
     for intern_name in sorted(intern_data.keys()):
