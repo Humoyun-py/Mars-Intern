@@ -66,10 +66,11 @@ Siz quyidagi amalarni bajarishingiz mumkin:
 2️⃣ 📋 Hisobotlar - Bugungi hisobotlarni ko'rish
 3️⃣ 📚 Dars ro'yxati - Interns kiritgan darslarni ko'rish
 4️⃣ 👥 Talabalar - Barcha talabalari ko'rish
-5️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
-6️⃣ 📜 Jurnali - Faoliyat jurnalini ko'rish
-7️⃣ 🔍 Qidirish - Talabani qidirish
-8️⃣ 🗑️ O'chirish - Hisobotni o'chirish
+5️⃣ ⏱️ Ish vaqti - Har bir intern nechi soat marsda bo'gani
+6️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
+7️⃣ 📜 Jurnali - Faoliyat jurnalini ko'rish
+8️⃣ 🔍 Qidirish - Talabani qidirish
+9️⃣ 🗑️ O'chirish - Hisobotni o'chirish
 """
     
     await message.answer(menu_text, reply_markup=keyboard)
