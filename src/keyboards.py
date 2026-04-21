@@ -3,7 +3,7 @@ Keyboards and UI components for the bot
 """
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from interns import INTERNS
-from config import BTN_DARS_KIRITISH, BTN_CANCEL
+from config import BTN_DARS_KIRITISH, BTN_CANCEL, BTN_ISSUE_REPORT, BTN_ABSENCE_REASON
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -12,6 +12,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🟢 Ish boshladim"), KeyboardButton(text="🔴 Ish tugatim")],
             [KeyboardButton(text=BTN_DARS_KIRITISH)],
+            [KeyboardButton(text=BTN_ABSENCE_REASON), KeyboardButton(text=BTN_ISSUE_REPORT)],
         ],
         resize_keyboard=True,
         one_time_keyboard=False

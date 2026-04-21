@@ -28,6 +28,8 @@ ADMIN_ID = None  # Set your admin ID for notifications
 BTN_DARS_KIRITISH = "📚 Dars kiritish"
 BTN_HISOBOT = "📋 Hisobot"
 BTN_CANCEL = "❌ Bekor qilish"
+BTN_ISSUE_REPORT = "⚠️ Muammo yozing"
+BTN_ABSENCE_REASON = "❌ Yo'q sabab kiritish"
 
 # Messages
 MSG_WELCOME = "Assalamu alaykum! Keling boshlaylik."

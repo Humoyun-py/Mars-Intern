@@ -3,11 +3,11 @@ Bot handlers for processing user messages and commands
 """
 from datetime import date, datetime
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.types import Bot, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import CommandStart, StateFilter
 
-from states import InternForm, WorkSession
+from states import InternForm, WorkSession, IssueReport
 from parser import ReportParser, TemplateGenerator
 from database import db
 from keyboards import (
@@ -19,6 +19,8 @@ from keyboards import (
 from config import (
     BTN_DARS_KIRITISH,
     BTN_CANCEL,
+    BTN_ISSUE_REPORT,
+    BTN_ABSENCE_REASON,
     MSG_WELCOME,
     MSG_SELECT_INTERNSHIP,
     MSG_TEMPLATE_REQUEST,
@@ -29,6 +31,19 @@ from config import (
 from interns import INTERNS
 
 router = Router()
+
+
+async def notify_admins(bot: Bot, text: str, sender_id: int = None):
+    """Send notification text to all admins"""
+    for admin in db.get_admins():
+        admin_id = admin['user_id']
+        if sender_id and admin_id == sender_id:
+            continue
+
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception as e:
+            print(f"❌ Admin notification error ({admin_id}): {e}")
 
 
 @router.message(CommandStart())
@@ -333,10 +348,99 @@ async def reject_report(message: Message, state: FSMContext):
     await state.set_state(InternForm.waiting_for_report)
 
 
-@router.message(InternForm.waiting_for_absence_reason)
+@router.message(IssueReport.writing_issue, F.text == BTN_CANCEL)
+async def cancel_issue_report(message: Message, state: FSMContext):
+    """Cancel issue reporting"""
+    await message.answer(
+        "Bekor qilindi. Bosh menyudan boshlang.",
+        reply_markup=get_main_keyboard()
+    )
+    await state.clear()
+
+
+@router.message(IssueReport.writing_issue)
+async def process_issue_report(message: Message, state: FSMContext):
+    """Process and save issue report"""
+    issue_reason = message.text.strip()
+    
+    # Save issue to database
+    try:
+        user_id = message.from_user.id
+        username = message.from_user.username or "N/A"
+        
+        # Store in database
+        db.add_log(user_id, "issue_reported", f"Issue: {issue_reason}")
+        admin_header = (
+            "⚠️ User paneldan yangi muammo keldi\n\n"
+            f"👤 User ID: {user_id}\n"
+        )
+        if username != "N/A":
+            admin_header += f"🔗 Username: @{username}\n"
+        await notify_admins(message.bot, admin_header + f"\n📝 Matn:\n{issue_reason}", sender_id=user_id)
+        
+        await message.answer(
+            f"✅ Muammo qayd qilindi!\n\n"
+            f"📝 Sababingiz admin tomonidan ko'rib chiqiladi.\n"
+            f"Rahmat!",
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        await message.answer(
+            f"❌ Xato: {str(e)}\n\nIltimos, qayta urinib ko'ring.",
+            reply_markup=get_cancel_keyboard()
+        )
+    
+    await state.clear()
+
+
+@router.message(InternForm.selecting_intern_for_absence, F.text.in_(INTERNS))
+async def select_intern_for_absence(message: Message, state: FSMContext):
+    """Handle intern selection for absence reason"""
+    intern_name = message.text
+    
+    await state.update_data(intern_name=intern_name)
+    await state.set_state(InternForm.writing_absence_reason)
+    
+    await message.answer(
+        f"{intern_name} uchun yo'q sababini yozing:\n\n"
+        f"Misol: Kasallandi, shaxsiy sabab, transport muammosi va h.k.",
+        reply_markup=get_cancel_keyboard()
+    )
+
+
+@router.message(InternForm.selecting_intern_for_absence, F.text == BTN_CANCEL)
+async def cancel_absence_intern_selection(message: Message, state: FSMContext):
+    """Cancel absence intern selection"""
+    await message.answer(
+        "Bekor qilindi. Bosh menyudan boshlang.",
+        reply_markup=get_main_keyboard()
+    )
+    await state.clear()
+
+
+@router.message(InternForm.selecting_intern_for_absence)
+async def invalid_absence_selection(message: Message, state: FSMContext):
+    """Handle invalid intern selection for absence"""
+    await message.answer(
+        "❌ Iltimos, ro'yxatdan birini tanlang yoki '❌ Bekor qilish' tugmasini bosing.",
+        reply_markup=get_intern_selection_keyboard()
+    )
+
+
+@router.message(InternForm.writing_absence_reason, F.text == BTN_CANCEL)
+async def cancel_absence_reason(message: Message, state: FSMContext):
+    """Cancel absence reason entry"""
+    await message.answer(
+        "Bekor qilindi. Bosh menyudan boshlang.",
+        reply_markup=get_main_keyboard()
+    )
+    await state.clear()
+
+
+@router.message(InternForm.writing_absence_reason)
 async def process_absence_reason(message: Message, state: FSMContext):
-    """Process absence reason"""
-    reason = message.text
+    """Process and save absence reason"""
+    reason = message.text.strip()
     
     data = await state.get_data()
     intern_name = data.get('intern_name')
@@ -351,19 +455,58 @@ async def process_absence_reason(message: Message, state: FSMContext):
         'absence_reason': reason
     }
     
-    db.add_report(absence_data)
-    
-    await message.answer(
-        f"✅ Qayd qilindi: {intern_name} kelmadi. Sabab: {reason}",
-        reply_markup=get_main_keyboard()
-    )
+    try:
+        db.add_report(absence_data)
+        await notify_admins(
+            message.bot,
+            "📩 User paneldan yo'q sabab kiritildi\n\n"
+            f"👤 {intern_name}\n"
+            f"📅 {date.today().strftime('%d.%m.%Y')}\n"
+            f"❌ Sabab: {reason}",
+            sender_id=message.from_user.id
+        )
+        
+        await message.answer(
+            f"✅ Qayd qilindi!\n\n"
+            f"👤 {intern_name}\n"
+            f"📅 {date.today().strftime('%d.%m.%Y')}\n"
+            f"❌ Yo'q sababi: {reason}\n\n"
+            f"Rahmat!",
+            reply_markup=get_main_keyboard()
+        )
+        db.add_log(message.from_user.id, "absence_reported", f"Intern: {intern_name}, Reason: {reason}")
+    except Exception as e:
+        await message.answer(
+            f"❌ Xato: {str(e)}\n\nIltimos, qayta urinib ko'ring.",
+            reply_markup=get_cancel_keyboard()
+        )
     
     await state.clear()
 
 
-@router.message()
-async def echo(message: Message):
-    """Echo unknown messages"""
+@router.message(F.text == BTN_ISSUE_REPORT, StateFilter(None))
+async def start_issue_report(message: Message, state: FSMContext):
+    """Start issue reporting flow"""
+    await message.answer(
+        "⚠️ Muammo yoki kelolmaslik sababini yozing:",
+        reply_markup=get_cancel_keyboard()
+    )
+    await state.set_state(IssueReport.writing_issue)
+
+
+@router.message(F.text == BTN_ABSENCE_REASON, StateFilter(None))
+async def start_absence_reason_flow(message: Message, state: FSMContext):
+    """Start absence reason flow"""
+    await message.answer(
+        "👤 Qaysi intern uchun yo'q sababi kiritiladi?",
+        reply_markup=get_intern_selection_keyboard()
+    )
+    await state.set_state(InternForm.selecting_intern_for_absence)
+
+
+@router.message(StateFilter(None))
+async def echo(message: Message, state: FSMContext):
+    """Handle unknown messages only when no state is active"""
     await message.answer(
         "❌ Noto'g'ri buyruq.\n\n"
         "Bosh menyudan tanlang:",

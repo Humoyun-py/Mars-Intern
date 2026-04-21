@@ -2,7 +2,7 @@
 Admin panel handlers for Mars Intern Bot
 """
 from datetime import date, timedelta, datetime, time
-from aiogram import F, Router
+from aiogram import F, Router, Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -358,48 +358,303 @@ async def admin_interns_callback(query: CallbackQuery):
 
 
 @admin_router.callback_query(F.data == "admin_excel")
-async def admin_excel_callback(query: CallbackQuery):
-    """Export data to Excel"""
+async def admin_excel_callback(query: CallbackQuery, bot: Bot):
+    """Export data to Excel with beautiful formatting"""
     if not db.is_admin(query.from_user.id):
         await query.answer("❌ Siz admin emassiz!", show_alert=True)
         return
     
     try:
         import pandas as pd
+        from openpyxl import load_workbook
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
         from database import DATABASE_FILE
         
+        today = date.today()
+        today_lessons = db.get_lessons_by_date(today)
+        lessons_by_intern = {}
+
+        for lesson in today_lessons:
+            lessons_by_intern.setdefault(lesson['intern_name'], []).append(lesson.get('teacher_name', '-'))
+        
+        # ===== SHEET 1: ATTENDANCE REPORT =====
+        all_reports = db.get_reports_by_date(today)
+        attendance_data = []
+        
+        for intern in INTERNS:
+            report_status = None
+            for report in all_reports:
+                if report['intern_name'] == intern:
+                    report_status = report
+                    break
+            
+            if report_status:
+                if report_status['status'] == 'Keldi':
+                    teacher_names = lessons_by_intern.get(intern, [])
+                    attendance_data.append({
+                        'No': len(attendance_data) + 1,
+                        'ISM FAMILIYA': intern,
+                        'STATUS': 'Keldi',
+                        'KELDI': 'Ha',
+                        'KELMADI': "Yo'q",
+                        'KELISH VAQTI': report_status.get('arrival_time', '-'),
+                        'KETISH VAQTI': report_status.get('departure_time', '-'),
+                        'DARSLAR': report_status.get('lesson_count', 0),
+                        'USTOZ 1': teacher_names[0] if len(teacher_names) > 0 else '-',
+                        'USTOZ 2': teacher_names[1] if len(teacher_names) > 1 else '-',
+                        'USTOZ 3': teacher_names[2] if len(teacher_names) > 2 else '-',
+                        'USTOZ 4': teacher_names[3] if len(teacher_names) > 3 else '-',
+                        'USTOZ 5': teacher_names[4] if len(teacher_names) > 4 else '-',
+                        'SABAB / IZOH': '-'
+                    })
+                else:
+                    attendance_data.append({
+                        'No': len(attendance_data) + 1,
+                        'ISM FAMILIYA': intern,
+                        'STATUS': 'Kelmadi',
+                        'KELDI': "Yo'q",
+                        'KELMADI': 'Ha',
+                        'KELISH VAQTI': '-',
+                        'KETISH VAQTI': '-',
+                        'DARSLAR': 0,
+                        'USTOZ 1': '-',
+                        'USTOZ 2': '-',
+                        'USTOZ 3': '-',
+                        'USTOZ 4': '-',
+                        'USTOZ 5': '-',
+                        'SABAB / IZOH': report_status.get('absence_reason', 'Sabab ko\'rsatilmadi')
+                    })
+            else:
+                attendance_data.append({
+                    'No': len(attendance_data) + 1,
+                    'ISM FAMILIYA': intern,
+                    'STATUS': 'Kutilmoqda',
+                    'KELDI': '-',
+                    'KELMADI': '-',
+                    'KELISH VAQTI': '-',
+                    'KETISH VAQTI': '-',
+                    'DARSLAR': 0,
+                    'USTOZ 1': '-',
+                    'USTOZ 2': '-',
+                    'USTOZ 3': '-',
+                    'USTOZ 4': '-',
+                    'USTOZ 5': '-',
+                    'SABAB / IZOH': 'Hisobot topshirmagan'
+                })
+        
+        # ===== SHEET 2: LESSONS =====
         lessons = db.get_all_lessons(days=90)
+        lessons_data = []
         
-        if not lessons:
-            await query.answer("❌ Export uchun darslar topilmadi")
-            return
-        
-        # Prepare data for Excel
-        data = []
         for lesson in lessons:
-            data.append({
+            lessons_data.append({
                 'Sana': lesson['lesson_date'],
                 'ISM': lesson['intern_name'],
                 'Dars #': lesson['lesson_number'],
                 'Ustoz': lesson['teacher_name'],
-                'Xona': lesson['room'],
+                'Xona': lesson.get('room', '-'),
                 'Vaqt': lesson['lesson_time']
             })
         
-        df = pd.DataFrame(data)
+        # Create excel file
+        excel_path = DATABASE_FILE.parent / f"hisobot_{today.strftime('%d_%m_%Y')}.xlsx"
         
-        # Save to Excel
-        excel_path = DATABASE_FILE.parent / f"lessons_export_{date.today().strftime('%d_%m_%Y')}.xlsx"
-        df.to_excel(excel_path, index=False, sheet_name='Darslar')
+        # Create writer
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            # Write attendance sheet
+            df_attendance = pd.DataFrame(attendance_data)
+            df_attendance.to_excel(writer, sheet_name='Hisobot', index=False)
+            
+            # Write lessons sheet
+            if lessons_data:
+                df_lessons = pd.DataFrame(lessons_data)
+                df_lessons.to_excel(writer, sheet_name='Darslar', index=False)
         
-        excel_msg = f"✅ Eksport bajarildi:\n<code>{excel_path.name}</code>"
-        await query.message.edit_text(excel_msg, reply_markup=get_back_keyboard())
+        # Format Excel file with beautiful styling
+        wb = load_workbook(excel_path)
+
+        # Format Hisobot sheet
+        ws_hisobot = wb['Hisobot']
+
+        present_count = sum(1 for row in attendance_data if row['STATUS'] == 'Keldi')
+        absent_count = sum(1 for row in attendance_data if row['STATUS'] == 'Kelmadi')
+        pending_count = sum(1 for row in attendance_data if row['STATUS'] == 'Kutilmoqda')
+
+        # Add title and summary block
+        ws_hisobot.insert_rows(1, amount=3)
+        ws_hisobot['A1'] = f"MARS INTERN DAVOMAT HISOBOTI - {today.strftime('%d.%m.%Y')}"
+        ws_hisobot.merge_cells("A1:M1")
+
+        ws_hisobot['A2'] = "Jami internlar"
+        ws_hisobot['B2'] = len(INTERNS)
+        ws_hisobot['C2'] = "Keldi"
+        ws_hisobot['D2'] = present_count
+        ws_hisobot['E2'] = "Kelmadi"
+        ws_hisobot['F2'] = absent_count
+        ws_hisobot['G2'] = "Kutilmoqda"
+        ws_hisobot['H2'] = pending_count
+        ws_hisobot['I2'] = f"Kelish foizi: {(present_count / len(INTERNS) * 100):.1f}%"
+
+        title_fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
+        title_font = Font(bold=True, color='FFFFFF', size=14)
+        summary_label_fill = PatternFill(start_color='D9EAF7', end_color='D9EAF7', fill_type='solid')
+        summary_value_fill = PatternFill(start_color='F4F8FB', end_color='F4F8FB', fill_type='solid')
+        ws_hisobot['A1'].fill = title_fill
+        ws_hisobot['A1'].font = title_font
+        ws_hisobot['A1'].alignment = Alignment(horizontal='center', vertical='center')
+        ws_hisobot.row_dimensions[1].height = 28
+        ws_hisobot.row_dimensions[2].height = 22
+
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        for col_num in range(1, 10):
+            cell = ws_hisobot.cell(row=2, column=col_num)
+            cell.border = border
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if col_num % 2 == 1:
+                cell.fill = summary_label_fill
+                cell.font = Font(bold=True, color='1F1F1F')
+            else:
+                cell.fill = summary_value_fill
+                cell.font = Font(bold=True, color='1F1F1F')
+
+        # Header formatting
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+
+        for col_num, column_title in enumerate(df_attendance.columns, 1):
+            cell = ws_hisobot.cell(row=4, column=col_num)
+            cell.value = column_title
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = border
+
+        # Data formatting
+        for row_num, row_data in enumerate(attendance_data, 5):
+            status_value = row_data['STATUS']
+            if status_value == 'Keldi':
+                row_fill = PatternFill(start_color='EAF6EA', end_color='EAF6EA', fill_type='solid')
+            elif status_value == 'Kelmadi':
+                row_fill = PatternFill(start_color='FDE9E7', end_color='FDE9E7', fill_type='solid')
+            else:
+                row_fill = PatternFill(start_color='FFF4D6', end_color='FFF4D6', fill_type='solid')
+
+            for col_num, col_value in enumerate(row_data.values(), 1):
+                cell = ws_hisobot.cell(row=row_num, column=col_num)
+                cell.value = col_value
+                cell.border = border
+                cell.fill = row_fill
+                cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+                if col_num in (1, 3, 4, 5, 6, 7):
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+                if col_num == 3:
+                    if col_value == 'Keldi':
+                        cell.font = Font(color='006100', bold=True)
+                    elif col_value == 'Kelmadi':
+                        cell.font = Font(color='9C0006', bold=True)
+                    else:
+                        cell.font = Font(color='9C6500', bold=True)
+                elif col_num in (4, 5):
+                    cell.font = Font(bold=True)
+
+            ws_hisobot.row_dimensions[row_num].height = 24
+
+        # Set column widths
+        ws_hisobot.column_dimensions['A'].width = 5
+        ws_hisobot.column_dimensions['B'].width = 24
+        ws_hisobot.column_dimensions['C'].width = 14
+        ws_hisobot.column_dimensions['D'].width = 10
+        ws_hisobot.column_dimensions['E'].width = 10
+        ws_hisobot.column_dimensions['F'].width = 14
+        ws_hisobot.column_dimensions['G'].width = 14
+        ws_hisobot.column_dimensions['H'].width = 24
+        ws_hisobot.column_dimensions['I'].width = 24
+        ws_hisobot.column_dimensions['J'].width = 24
+        ws_hisobot.column_dimensions['K'].width = 24
+        ws_hisobot.column_dimensions['L'].width = 24
+        ws_hisobot.column_dimensions['M'].width = 34
+        ws_hisobot.freeze_panes = 'A5'
+        ws_hisobot.auto_filter.ref = f"A4:M{ws_hisobot.max_row}"
+
+        # Format Darslar sheet if it exists
+        if 'Darslar' in wb.sheetnames:
+            ws_lessons = wb['Darslar']
+            
+            # Add title
+            ws_lessons.insert_rows(1)
+            ws_lessons['A1'] = 'DARS RO\'YXATI (Oxirgi 90 kun)'
+            ws_lessons.merge_cells('A1:F1')
+            
+            ws_lessons['A1'].fill = title_fill
+            ws_lessons['A1'].font = title_font
+            ws_lessons['A1'].alignment = Alignment(horizontal='center', vertical='center')
+            ws_lessons.row_dimensions[1].height = 25
+            
+            # Header formatting
+            for col_num, column_title in enumerate(df_lessons.columns, 1):
+                cell = ws_lessons.cell(row=2, column=col_num)
+                cell.value = column_title
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = border
+            
+            # Data formatting
+            for row_num, row_data in enumerate(lessons_data, 3):
+                for col_num, col_value in enumerate(row_data.values(), 1):
+                    cell = ws_lessons.cell(row=row_num, column=col_num)
+                    cell.value = col_value
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal='left', vertical='center')
+
+            ws_lessons.freeze_panes = 'A3'
+            ws_lessons.auto_filter.ref = f"A2:F{ws_lessons.max_row}"
+            
+            # Set column widths
+            ws_lessons.column_dimensions['A'].width = 15
+            ws_lessons.column_dimensions['B'].width = 20
+            ws_lessons.column_dimensions['C'].width = 10
+            ws_lessons.column_dimensions['D'].width = 20
+            ws_lessons.column_dimensions['E'].width = 15
+            ws_lessons.column_dimensions['F'].width = 15
+        
+        wb.save(excel_path)
+        
+        # Send file
+        file = FSInputFile(excel_path)
+        stats_text = f"""
+📊 HISOBOT XULOSA
+📅 {today.strftime('%d.%m.%Y')}
+
+✅ Kelganlar: {present_count} ta
+❌ Kelmaganlar: {absent_count} ta
+⏳ Kutilmoqda: {pending_count} ta
+
+📚 Jami darslar: {len(lessons)} ta
+"""
+        
+        await bot.send_document(
+            chat_id=query.from_user.id,
+            document=file,
+            caption=stats_text
+        )
+        
+        await query.message.edit_text(f"✅ Hisobot yaratildi va yuborsdim!\n📄 {excel_path.name}", reply_markup=get_back_keyboard())
         await query.answer()
-        db.add_log(query.from_user.id, "excel_exported")
+        db.add_log(query.from_user.id, "excel_exported", f"Attendance + {len(lessons)} lessons")
     except Exception as e:
         error_msg = f"❌ Xato: {str(e)}"
         await query.message.edit_text(error_msg, reply_markup=get_back_keyboard())
         await query.answer()
+        print(f"Excel export error: {str(e)}")
 
 
 @admin_router.callback_query(F.data == "admin_logs")
@@ -592,6 +847,12 @@ MISOL:
     
     await query.message.edit_text(help_text, reply_markup=get_back_keyboard())
     await query.answer()
+
+
+@admin_router.message(F.text == "/interns_list")
+@admin_router.message(F.text == "👥 Talabalar")
+@admin_router.message(F.text == "Internlar ro'yxati")
+@admin_router.message(F.text == "internlar ro'yxati")
 async def admin_interns_list(message: Message):
     """Show all interns list"""
     if not db.is_admin(message.from_user.id):

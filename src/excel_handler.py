@@ -1,5 +1,5 @@
 """
-Excel handler for storing and managing intern reports
+Excel handler for storing and managing intern reports with beautiful formatting
 """
 from pathlib import Path
 from datetime import date
@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from config import EXCEL_FILE
 from interns import INTERNS
 
@@ -37,28 +38,53 @@ class ExcelHandler:
         self.setup_styles()
 
     def setup_styles(self):
-        """Setup Excel styling"""
+        """Setup Excel styling with professional formatting"""
         wb = load_workbook(self.excel_file)
         ws = wb.active
         
-        # Header styles
-        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
-        header_font = Font(bold=True, color='FFFFFF')
+        # Define professional colors
+        header_fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')  # Dark blue
+        header_font = Font(bold=True, color='FFFFFF', size=12)
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        for cell in ws[1]:
+        # Apply header styling
+        for col_idx, cell in enumerate(ws[1], start=1):
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = border
+        
+        # Apply alternating row colors and borders
+        light_fill = PatternFill(start_color='E7E6E6', end_color='E7E6E6', fill_type='solid')  # Light gray
+        white_fill = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')  # White
+        body_font = Font(color='000000', size=11)
+        
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
+            fill = light_fill if row_idx % 2 == 0 else white_fill
+            for cell in row:
+                cell.fill = fill
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                cell.border = border
         
         # Set column widths
-        ws.column_dimensions['A'].width = 25
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 15
-        ws.column_dimensions['D'].width = 20
-        ws.column_dimensions['E'].width = 12
-        ws.column_dimensions['F'].width = 30
+        ws.column_dimensions['A'].width = 30
+        
+        # Freeze first column and header
+        ws.freeze_panes = 'B2'
+        
+        # Set default row height
+        ws.row_dimensions[1].height = 25
+        for row_idx in range(2, ws.max_row + 1):
+            ws.row_dimensions[row_idx].height = 30
         
         wb.save(self.excel_file)
+        wb.close()
 
     def add_record(self, data: Dict):
         """
@@ -110,9 +136,17 @@ class ExcelHandler:
         self.apply_formatting(data, date_str)
 
     def apply_formatting(self, data: Dict, date_str: str):
-        """Apply formatting to cells"""
+        """Apply professional formatting to cells"""
         wb = load_workbook(self.excel_file)
         ws = wb.active
+        
+        # Define borders
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
         # Find intern row
         intern_row = None
@@ -138,21 +172,24 @@ class ExcelHandler:
         
         # Get cell and apply formatting
         cell = ws.cell(row=intern_row, column=date_col)
-        cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = border
         
         if data['status'] == 'Kelmadi':
-            red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
-            red_font = Font(color='FFFFFF', bold=True)
+            # Red for absent - missing
+            red_fill = PatternFill(start_color='F4CCCC', end_color='F4CCCC', fill_type='solid')  # Light red
+            red_font = Font(color='900000', bold=True, size=11)  # Dark red text
             cell.fill = red_fill
             cell.font = red_font
         else:
-            green_fill = PatternFill(start_color='00B050', end_color='00B050', fill_type='solid')
-            green_font = Font(color='FFFFFF', bold=True)
+            # Green for present - came
+            green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')  # Light green
+            green_font = Font(color='006100', bold=True, size=11)  # Dark green text
             cell.fill = green_fill
             cell.font = green_font
         
         # Set row height
-        ws.row_dimensions[intern_row].height = 40
+        ws.row_dimensions[intern_row].height = 35
         
         wb.save(self.excel_file)
         wb.close()

@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 from config import BASE_DIR
+from interns import INTERNS
 
 DATABASE_FILE = BASE_DIR / "data" / "mars_intern.db"
 
@@ -251,8 +252,41 @@ class Database:
             'total': result['total'] or 0,
             'present': result['present'] or 0,
             'absent': result['absent'] or 0,
-            'not_reported': 13 - (result['total'] or 0)
+            'not_reported': len(INTERNS) - (result['total'] or 0)
         }
+
+    def auto_mark_absent_for_date(
+        self,
+        report_date: date,
+        reason: str = "12:00 gacha hisobot yubormadi"
+    ) -> List[str]:
+        """Mark missing interns as absent for the given date"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT intern_name FROM reports
+                WHERE report_date = ?
+            ''', (report_date,))
+            reported_interns = {row['intern_name'] for row in cursor.fetchall()}
+            missing_interns = [intern for intern in INTERNS if intern not in reported_interns]
+
+            for intern_name in missing_interns:
+                cursor.execute('''
+                    INSERT INTO reports
+                    (intern_name, report_date, arrival_time, departure_time,
+                     lesson_count, teachers, status, absence_reason)
+                    VALUES (?, ?, '', '', 0, '', 'Kelmadi', ?)
+                ''', (intern_name, report_date, reason))
+
+            conn.commit()
+            return missing_interns
+        except Exception as e:
+            print(f"Error auto marking absences: {e}")
+            return []
+        finally:
+            conn.close()
     
     def delete_report(self, intern_name: str, report_date: date) -> bool:
         """Delete a report"""

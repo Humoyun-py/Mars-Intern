@@ -3,6 +3,7 @@ Main bot entry point
 """
 import asyncio
 import logging
+from datetime import datetime, time
 from aiogram import Dispatcher, Bot, F
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
@@ -11,6 +12,7 @@ from config import BOT_TOKEN
 from handlers import router
 from admin import admin_router
 from admin_init import setup_admin  # Initialize admin
+from database import db
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +29,37 @@ async def set_commands(bot: Bot):
         BotCommand(command='help', description='Yordam'),
     ]
     await bot.set_my_commands(commands)
+
+
+async def auto_absence_scheduler(bot: Bot):
+    """Mark missing interns as absent after 12:00 each day"""
+    last_processed_date = None
+
+    while True:
+        try:
+            now = datetime.now()
+            today = now.date()
+
+            if now.time() >= time(12, 0) and last_processed_date != today:
+                missing_interns = db.auto_mark_absent_for_date(today)
+
+                if missing_interns:
+                    notification = (
+                        "⏰ 12:00 nazorati bajarildi\n\n"
+                        "Quyidagi internlar avtomatik 'Kelmadi' deb belgilandi:\n"
+                        + "\n".join(f"• {intern}" for intern in missing_interns)
+                    )
+                    for admin in db.get_admins():
+                        try:
+                            await bot.send_message(admin['user_id'], notification)
+                        except Exception as e:
+                            logger.warning("Admin notification failed for %s: %s", admin['user_id'], e)
+
+                last_processed_date = today
+        except Exception as e:
+            logger.exception("Auto absence scheduler error: %s", e)
+
+        await asyncio.sleep(60)
 
 
 async def main():
@@ -50,6 +83,8 @@ async def main():
     # Include routers
     dp.include_router(admin_router)  # Admin commands first (higher priority)
     dp.include_router(router)         # Regular user commands
+
+    scheduler_task = asyncio.create_task(auto_absence_scheduler(bot))
     
     # Set bot commands
     await set_commands(bot)
@@ -61,6 +96,11 @@ async def main():
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
 
 
