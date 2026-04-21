@@ -1,9 +1,9 @@
 """
 Admin panel handlers for Mars Intern Bot
 """
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, time
 from aiogram import F, Router
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import CommandStart
@@ -18,6 +18,7 @@ class AdminStates(StatesGroup):
     searching_intern = State()
     deleting_report = State()
     adding_admin = State()
+    writing_issue_reason = State()  # For reporting issues
 
 admin_router = Router()
 
@@ -54,7 +55,6 @@ async def admin_menu(message: Message):
             InlineKeyboardButton(text="📥 Excel export", callback_data="admin_excel")
         ],
         [
-            InlineKeyboardButton(text="📜 Jurnali", callback_data="admin_logs"),
             InlineKeyboardButton(text="🔍 Qidirish", callback_data="admin_search")
         ],
         [
