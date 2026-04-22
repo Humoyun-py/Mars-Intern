@@ -2,8 +2,8 @@
 Bot handlers for processing user messages and commands
 """
 from datetime import date, datetime
-from aiogram import F, Router
-from aiogram.types import Bot, Message
+from aiogram import Bot, F, Router
+from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import CommandStart, StateFilter
 
@@ -93,7 +93,11 @@ async def handle_work_intern_start(message: Message, state: FSMContext):
         )
     else:
         # Start the session
-        if db.start_work_session(intern_name):
+        if db.start_work_session(
+            intern_name,
+            user_id=message.from_user.id,
+            username=message.from_user.username or message.from_user.full_name
+        ):
             # Get today's work sessions to calculate total hours
             today_sessions = db.get_work_sessions_by_date(date.today())
             total_minutes = 0
@@ -135,7 +139,11 @@ async def handle_work_intern_end(message: Message, state: FSMContext):
     
     if active_session:
         # End the session
-        if db.end_work_session(intern_name):
+        if db.end_work_session(
+            intern_name,
+            ended_by_user_id=message.from_user.id,
+            ended_by_username=message.from_user.username or message.from_user.full_name
+        ):
             start_time = datetime.fromisoformat(active_session['start_time'])
             end_time = datetime.now()
             duration = int((end_time - start_time).total_seconds() / 60)
@@ -269,6 +277,9 @@ async def process_report(message: Message, state: FSMContext):
     
     # Store parsed data in state
     parsed_data['status'] = 'Keldi'
+    parsed_data['user_id'] = message.from_user.id
+    parsed_data['username'] = message.from_user.username or message.from_user.full_name
+    parsed_data['raw_text'] = text
     await state.update_data(parsed_report=parsed_data)
     await state.set_state(InternForm.confirming_report)
     
@@ -369,6 +380,13 @@ async def process_issue_report(message: Message, state: FSMContext):
         username = message.from_user.username or "N/A"
         
         # Store in database
+        db.add_submitted_reason(
+            user_id=user_id,
+            username=username,
+            reason_type="issue",
+            reason_text=issue_reason,
+            reason_date=date.today()
+        )
         db.add_log(user_id, "issue_reported", f"Issue: {issue_reason}")
         admin_header = (
             "⚠️ User paneldan yangi muammo keldi\n\n"
@@ -452,11 +470,22 @@ async def process_absence_reason(message: Message, state: FSMContext):
         'departure_time': '',
         'lessons': [],
         'status': 'Kelmadi',
-        'absence_reason': reason
+        'absence_reason': reason,
+        'user_id': message.from_user.id,
+        'username': message.from_user.username or message.from_user.full_name,
+        'raw_text': reason
     }
     
     try:
         db.add_report(absence_data)
+        db.add_submitted_reason(
+            user_id=message.from_user.id,
+            username=message.from_user.username or "N/A",
+            intern_name=intern_name,
+            reason_type="absence",
+            reason_text=reason,
+            reason_date=date.today()
+        )
         await notify_admins(
             message.bot,
             "📩 User paneldan yo'q sabab kiritildi\n\n"
@@ -488,7 +517,7 @@ async def process_absence_reason(message: Message, state: FSMContext):
 async def start_issue_report(message: Message, state: FSMContext):
     """Start issue reporting flow"""
     await message.answer(
-        "⚠️ Muammo yoki kelolmaslik sababini yozing:",
+        "⚠️ Muammoni yozing:",
         reply_markup=get_cancel_keyboard()
     )
     await state.set_state(IssueReport.writing_issue)

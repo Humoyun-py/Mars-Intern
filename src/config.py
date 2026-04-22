@@ -22,14 +22,14 @@ EXCEL_FILE = DATA_DIR / "interns_reports.xlsx"
 TIMEZONE = "Asia/Tashkent"
 
 # Admin settings
-ADMIN_ID = None  # Set your admin ID for notifications
+ADMIN_ID = 7782143104  # Set your admin ID for notifications
 
 # Button labels (in Uzbek)
 BTN_DARS_KIRITISH = "📚 Dars kiritish"
 BTN_HISOBOT = "📋 Hisobot"
 BTN_CANCEL = "❌ Bekor qilish"
-BTN_ISSUE_REPORT = "⚠️ Muammo yozing"
-BTN_ABSENCE_REASON = "❌ Yo'q sabab kiritish"
+BTN_ISSUE_REPORT = "⚠️ Muammoni yozing"
+BTN_ABSENCE_REASON = "📝 Sabab kiritish"
 
 # Messages
 MSG_WELCOME = "Assalamu alaykum! Keling boshlaylik."

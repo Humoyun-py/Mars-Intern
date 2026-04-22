@@ -12,7 +12,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🟢 Ish boshladim"), KeyboardButton(text="🔴 Ish tugatim")],
             [KeyboardButton(text=BTN_DARS_KIRITISH)],
-            [KeyboardButton(text=BTN_ABSENCE_REASON), KeyboardButton(text=BTN_ISSUE_REPORT)],
+            [KeyboardButton(text=BTN_ABSENCE_REASON)],
         ],
         resize_keyboard=True,
         one_time_keyboard=False
