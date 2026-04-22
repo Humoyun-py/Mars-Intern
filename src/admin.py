@@ -33,6 +33,17 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def format_short_time(value) -> str:
+    """Format DB datetime/time values for admin display"""
+    if not value:
+        return "-"
+
+    if isinstance(value, str):
+        return value.split('T')[-1][:5] if 'T' in value else value[:5]
+
+    return str(value)[:5]
+
+
 @admin_router.message(F.text == "/admin")
 async def admin_menu(message: Message):
     """Show admin menu with inline buttons"""
@@ -47,11 +58,14 @@ async def admin_menu(message: Message):
             InlineKeyboardButton(text="📋 Hisobotlar", callback_data="admin_reports")
         ],
         [
-            InlineKeyboardButton(text="📚 Dars ro'yxati", callback_data="admin_lessons"),
+            InlineKeyboardButton(text="✅ Davomat", callback_data="admin_attendance"),
             InlineKeyboardButton(text="👥 Talabalar", callback_data="admin_interns")
         ],
         [
-            InlineKeyboardButton(text="⏱️ Ish vaqti", callback_data="admin_work_stats"),
+            InlineKeyboardButton(text="📚 Dars ro'yxati", callback_data="admin_lessons"),
+            InlineKeyboardButton(text="⏱️ Ish vaqti", callback_data="admin_work_stats")
+        ],
+        [
             InlineKeyboardButton(text="📥 Excel export", callback_data="admin_excel")
         ],
         [
@@ -72,11 +86,11 @@ async def admin_menu(message: Message):
 Siz quyidagi amalarni bajarishingiz mumkin:
 1️⃣ 📊 Statistika - Bugungi statistikani ko'rish
 2️⃣ 📋 Hisobotlar - Bugungi hisobotlarni ko'rish
-3️⃣ 📚 Dars ro'yxati - Interns kiritgan darslarni ko'rish
+3️⃣ ✅ Davomat - Kim keldi, kim kelmadi ko'rish
 4️⃣ 👥 Talabalar - Barcha talabalari ko'rish
-5️⃣ ⏱️ Ish vaqti - Har bir intern nechi soat marsda bo'gani
-6️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
-7️⃣ 📜 Jurnali - Faoliyat jurnalini ko'rish
+5️⃣ 📚 Dars ro'yxati - Internlar kiritgan darslarni ko'rish
+6️⃣ ⏱️ Ish vaqti - Har bir intern nechi soat marsda bo'lgani
+7️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
 8️⃣ 🔍 Qidirish - Talabani qidirish
 9️⃣ 🗑️ O'chirish - Hisobotni o'chirish
 """
@@ -167,6 +181,88 @@ async def admin_reports_callback(query: CallbackQuery):
     await query.message.edit_text(reports_text, reply_markup=get_back_keyboard())
     await query.answer()
     db.add_log(query.from_user.id, "reports_viewed", f"Date: {today}")
+
+
+@admin_router.callback_query(F.data == "admin_attendance")
+async def admin_attendance_callback(query: CallbackQuery):
+    """Show today's attendance list grouped by status"""
+    if not db.is_admin(query.from_user.id):
+        await query.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+
+    today = date.today()
+    reports = db.get_reports_by_date(today)
+    report_map = {report['intern_name']: report for report in reports}
+    work_sessions = db.get_work_sessions_by_date(today)
+    active_work_map = {}
+
+    for session in work_sessions:
+        if session['status'] == 'active':
+            active_work_map[session['intern_name']] = session
+
+    present_interns = []
+    absent_interns = []
+    pending_interns = []
+
+    for intern in INTERNS:
+        report = report_map.get(intern)
+        active_session = active_work_map.get(intern)
+
+        if report and report['status'] == 'Keldi':
+            present_interns.append({
+                'intern_name': intern,
+                'arrival_time': report.get('arrival_time'),
+                'departure_time': report.get('departure_time'),
+                'source': 'report'
+            })
+        elif active_session:
+            present_interns.append({
+                'intern_name': intern,
+                'arrival_time': active_session.get('start_time'),
+                'departure_time': active_session.get('end_time'),
+                'source': 'work_session'
+            })
+        elif not report:
+            pending_interns.append(intern)
+        else:
+            absent_interns.append((intern, report.get('absence_reason') or "Sabab ko'rsatilmagan"))
+
+    attendance_text = f"✅ BUGUNGI DAVOMAT\n📅 {today.strftime('%d.%m.%Y')}\n\n"
+
+    attendance_text += f"🟢 Keldi: {len(present_interns)} ta\n"
+    if present_interns:
+        attendance_text += "\n".join(
+            f"• {item['intern_name']} | Kelgan: {format_short_time(item.get('arrival_time'))} | "
+            f"Ketgan: {format_short_time(item.get('departure_time'))}"
+            + (" | Hisobot topshirmagan" if item.get('source') == 'work_session' else "")
+            for item in present_interns
+        )
+    else:
+        attendance_text += "Hozircha yo'q"
+    attendance_text += "\n\n"
+
+    attendance_text += f"🔴 Kelmadi: {len(absent_interns)} ta\n"
+    attendance_text += "\n".join(
+        f"• {intern} - {reason}" for intern, reason in absent_interns
+    ) if absent_interns else "Hozircha yo'q"
+    attendance_text += "\n\n"
+
+    attendance_text += f"⏳ Kutilmoqda: {len(pending_interns)} ta\n"
+    if pending_interns:
+        attendance_text += "\n".join(f"• {intern}" for intern in pending_interns)
+    else:
+        attendance_text += "Hamma hisobot topshirgan"
+
+    if len(attendance_text) > 4000:
+        attendance_text = attendance_text[:3950] + "\n\n..."
+
+    try:
+        await query.message.edit_text(attendance_text, reply_markup=get_back_keyboard())
+    except Exception:
+        await query.message.answer(attendance_text, reply_markup=get_back_keyboard())
+
+    await query.answer("✅ Davomat chiqarildi")
+    db.add_log(query.from_user.id, "attendance_viewed", f"Date: {today}")
 
 
 @admin_router.callback_query(F.data == "admin_lessons")
@@ -1059,15 +1155,17 @@ async def admin_back_callback(query: CallbackQuery):
             InlineKeyboardButton(text="📋 Hisobotlar", callback_data="admin_reports")
         ],
         [
-            InlineKeyboardButton(text="📚 Dars ro'yxati", callback_data="admin_lessons"),
+            InlineKeyboardButton(text="✅ Davomat", callback_data="admin_attendance"),
             InlineKeyboardButton(text="👥 Talabalar", callback_data="admin_interns")
         ],
         [
-            InlineKeyboardButton(text="⏱️ Ish vaqti", callback_data="admin_work_stats"),
+            InlineKeyboardButton(text="📚 Dars ro'yxati", callback_data="admin_lessons"),
+            InlineKeyboardButton(text="⏱️ Ish vaqti", callback_data="admin_work_stats")
+        ],
+        [
             InlineKeyboardButton(text="📥 Excel export", callback_data="admin_excel")
         ],
         [
-            InlineKeyboardButton(text="📜 Jurnali", callback_data="admin_logs"),
             InlineKeyboardButton(text="🔍 Qidirish", callback_data="admin_search")
         ],
         [
@@ -1085,11 +1183,11 @@ async def admin_back_callback(query: CallbackQuery):
 Siz quyidagi amalarni bajarishingiz mumkin:
 1️⃣ 📊 Statistika - Bugungi statistikani ko'rish
 2️⃣ 📋 Hisobotlar - Bugungi hisobotlarni ko'rish
-3️⃣ 📚 Dars ro'yxati - Interns kiritgan darslarni ko'rish
+3️⃣ ✅ Davomat - Kim keldi, kim kelmadi ko'rish
 4️⃣ 👥 Talabalar - Barcha talabalari ko'rish
-5️⃣ ⏱️ Ish vaqti - Har bir intern nechi soat marsda bo'gani
-6️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
-7️⃣ 📜 Jurnali - Faoliyat jurnalini ko'rish
+5️⃣ 📚 Dars ro'yxati - Internlar kiritgan darslarni ko'rish
+6️⃣ ⏱️ Ish vaqti - Har bir intern nechi soat marsda bo'lgani
+7️⃣ 📥 Excel export - Darslarni Excel ga chiqarish
 8️⃣ 🔍 Qidirish - Talabani qidirish
 9️⃣ 🗑️ O'chirish - Hisobotni o'chirish
 """

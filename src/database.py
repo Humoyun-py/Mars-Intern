@@ -24,6 +24,21 @@ class Database:
         conn = sqlite3.connect(self.db_file)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def ensure_column(self, table_name: str, column_name: str, column_definition: str):
+        """Add column to table if it does not exist yet"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            existing_columns = {row["name"] for row in cursor.fetchall()}
+
+            if column_name not in existing_columns:
+                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+                conn.commit()
+        finally:
+            conn.close()
     
     def create_tables(self):
         """Create all required tables"""
@@ -67,6 +82,20 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Submitted reasons table - store reasons entered by interns/users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS submitted_reasons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                intern_name TEXT,
+                reason_type TEXT NOT NULL,
+                reason_text TEXT NOT NULL,
+                reason_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         
         # Lessons table - store individual lessons
         cursor.execute('''
@@ -98,9 +127,17 @@ class Database:
                 UNIQUE(intern_name, work_date, start_time)
             )
         ''')
-        
+
         conn.commit()
         conn.close()
+
+        self.ensure_column("reports", "user_id", "INTEGER")
+        self.ensure_column("reports", "username", "TEXT")
+        self.ensure_column("reports", "raw_text", "TEXT")
+        self.ensure_column("work_sessions", "user_id", "INTEGER")
+        self.ensure_column("work_sessions", "username", "TEXT")
+        self.ensure_column("work_sessions", "ended_by_user_id", "INTEGER")
+        self.ensure_column("work_sessions", "ended_by_username", "TEXT")
     
     # REPORTS OPERATIONS
     
@@ -136,8 +173,8 @@ class Database:
             cursor.execute('''
                 INSERT INTO reports 
                 (intern_name, report_date, arrival_time, departure_time, 
-                 lesson_count, teachers, status, absence_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 lesson_count, teachers, status, absence_reason, user_id, username, raw_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data['intern_name'],
                 report_date,
@@ -146,7 +183,10 @@ class Database:
                 len(data.get('lessons', [])),
                 ', '.join([lesson['teacher'] for lesson in data.get('lessons', [])]),
                 data.get('status', 'Keldi'),
-                data.get('absence_reason', '')
+                data.get('absence_reason', ''),
+                data.get('user_id'),
+                data.get('username'),
+                data.get('raw_text', '')
             ))
             
             # Get the new report ID
@@ -431,6 +471,51 @@ class Database:
             return False
         finally:
             conn.close()
+
+    def add_submitted_reason(
+        self,
+        user_id: int,
+        username: str,
+        reason_type: str,
+        reason_text: str,
+        reason_date: date = None,
+        intern_name: str = None
+    ) -> bool:
+        """Save a user-submitted reason to database"""
+        if reason_date is None:
+            reason_date = date.today()
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT INTO submitted_reasons
+                (user_id, username, intern_name, reason_type, reason_text, reason_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, username, intern_name, reason_type, reason_text, reason_date))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error adding submitted reason: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_submitted_reasons(self, days: int = 30) -> List[Dict]:
+        """Get submitted reasons from last N days"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM submitted_reasons
+            WHERE reason_date >= date('now', '-' || ? || ' days')
+            ORDER BY created_at DESC
+        ''', (days,))
+
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
     
     def get_logs(self, limit: int = 100) -> List[Dict]:
         """Get recent logs"""
@@ -449,7 +534,7 @@ class Database:
     
     # WORK SESSION OPERATIONS
     
-    def start_work_session(self, intern_name: str) -> bool:
+    def start_work_session(self, intern_name: str, user_id: int = None, username: str = None) -> bool:
         """Start work session for intern"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -466,9 +551,9 @@ class Database:
             
             cursor.execute('''
                 INSERT INTO work_sessions 
-                (intern_name, work_date, start_time, status)
-                VALUES (?, ?, ?, 'active')
-            ''', (intern_name, date.today(), datetime.now()))
+                (intern_name, work_date, start_time, status, user_id, username)
+                VALUES (?, ?, ?, 'active', ?, ?)
+            ''', (intern_name, date.today(), datetime.now(), user_id, username))
             
             conn.commit()
             return True
@@ -478,7 +563,7 @@ class Database:
         finally:
             conn.close()
     
-    def end_work_session(self, intern_name: str) -> bool:
+    def end_work_session(self, intern_name: str, ended_by_user_id: int = None, ended_by_username: str = None) -> bool:
         """End work session for intern"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -502,9 +587,10 @@ class Database:
             # Update session
             cursor.execute('''
                 UPDATE work_sessions 
-                SET end_time = ?, duration_minutes = ?, status = 'completed'
+                SET end_time = ?, duration_minutes = ?, status = 'completed',
+                    ended_by_user_id = ?, ended_by_username = ?
                 WHERE id = ?
-            ''', (end_time, duration_minutes, session['id']))
+            ''', (end_time, duration_minutes, ended_by_user_id, ended_by_username, session['id']))
             
             conn.commit()
             return True
