@@ -22,7 +22,7 @@ EXCEL_FILE = DATA_DIR / "interns_reports.xlsx"
 TIMEZONE = "Asia/Tashkent"
 
 # Admin settings
-ADMIN_ID = 7782143104  # Set your admin ID for notifications
+ADMIN_ID = 7782143104, 865954550, 1038185913  # Set your admin ID for notifications
 
 # Button labels (in Uzbek)
 BTN_DARS_KIRITISH = "📚 Dars kiritish"

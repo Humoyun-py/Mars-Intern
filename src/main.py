@@ -3,12 +3,13 @@ Main bot entry point
 """
 import asyncio
 import logging
-from datetime import datetime, time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from aiogram import Dispatcher, Bot, F
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, TIMEZONE
 from handlers import router
 from admin import admin_router
 from admin_init import setup_admin  # Initialize admin
@@ -32,20 +33,22 @@ async def set_commands(bot: Bot):
 
 
 async def auto_absence_scheduler(bot: Bot):
-    """Mark missing interns as absent after 12:00 each day"""
-    last_processed_date = None
+    """Mark yesterday's missing interns as absent after midnight"""
+    tz = ZoneInfo(TIMEZONE)
+    last_processed_report_date = None
 
     while True:
         try:
-            now = datetime.now()
-            today = now.date()
+            now = datetime.now(tz)
+            report_date = now.date() - timedelta(days=1)
 
-            if now.time() >= time(12, 0) and last_processed_date != today:
-                missing_interns = db.auto_mark_absent_for_date(today)
+            if last_processed_report_date != report_date:
+                missing_interns = db.auto_mark_absent_for_date(report_date)
 
                 if missing_interns:
                     notification = (
-                        "⏰ 12:00 nazorati bajarildi\n\n"
+                        f"⏰ 00:00 dan keyingi avtomatik tekshiruv bajarildi\n"
+                        f"📅 Sana: {report_date.strftime('%d.%m.%Y')}\n\n"
                         "Quyidagi internlar avtomatik 'Kelmadi' deb belgilandi:\n"
                         + "\n".join(f"• {intern}" for intern in missing_interns)
                     )
@@ -55,7 +58,7 @@ async def auto_absence_scheduler(bot: Bot):
                         except Exception as e:
                             logger.warning("Admin notification failed for %s: %s", admin['user_id'], e)
 
-                last_processed_date = today
+                last_processed_report_date = report_date
         except Exception as e:
             logger.exception("Auto absence scheduler error: %s", e)
 

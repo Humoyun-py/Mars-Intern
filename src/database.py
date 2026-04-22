@@ -298,7 +298,7 @@ class Database:
     def auto_mark_absent_for_date(
         self,
         report_date: date,
-        reason: str = "12:00 gacha hisobot yubormadi"
+        reason: str = "Kun yakunigacha hisobot yubormadi"
     ) -> List[str]:
         """Mark missing interns as absent for the given date"""
         conn = self.get_connection()
