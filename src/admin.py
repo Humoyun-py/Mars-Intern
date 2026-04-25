@@ -19,6 +19,8 @@ class AdminStates(StatesGroup):
     deleting_report = State()
     adding_admin = State()
     writing_issue_reason = State()  # For reporting issues
+    changing_password_intern = State()  # Select intern to change password
+    changing_password_new = State()  # Enter new password
 
 admin_router = Router()
 
@@ -74,6 +76,9 @@ async def admin_menu(message: Message):
         [
             InlineKeyboardButton(text="🗑️ O'chirish", callback_data="admin_delete"),
             InlineKeyboardButton(text="👨‍💼 Admin qo'shish", callback_data="admin_add")
+        ],
+        [
+            InlineKeyboardButton(text="🔐 Parol o'zgartirish", callback_data="admin_password")
         ],
         [
             InlineKeyboardButton(text="ℹ️ Yordam", callback_data="admin_help")
@@ -1194,3 +1199,74 @@ Siz quyidagi amalarni bajarishingiz mumkin:
     
     await query.message.edit_text(menu_text, reply_markup=keyboard)
     await query.answer()
+
+
+# ===================== PASSWORD MANAGEMENT =====================
+
+@admin_router.callback_query(F.data == "admin_password")
+async def admin_password_callback(query: CallbackQuery, state: FSMContext):
+    """Start password change process"""
+    if not db.is_admin(query.from_user.id):
+        await query.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+    
+    await query.answer()
+    
+    # Create keyboard with all interns
+    buttons = []
+    for i in range(0, len(INTERNS), 2):
+        row = []
+        if i < len(INTERNS):
+            row.append(InlineKeyboardButton(text=INTERNS[i], callback_data=f"change_pwd_{i}"))
+        if i + 1 < len(INTERNS):
+            row.append(InlineKeyboardButton(text=INTERNS[i + 1], callback_data=f"change_pwd_{i+1}"))
+        buttons.append(row)
+    
+    buttons.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await query.message.edit_text("🔐 Parolni o'zgartirish uchun talabani tanlang:", reply_markup=keyboard)
+
+
+@admin_router.callback_query(F.data.startswith("change_pwd_"))
+async def select_intern_for_password(query: CallbackQuery, state: FSMContext):
+    """Handle intern selection for password change"""
+    if not db.is_admin(query.from_user.id):
+        await query.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+    
+    index = int(query.data.split("_")[2])
+    intern_name = INTERNS[index]
+    
+    await state.update_data(password_intern=intern_name)
+    await state.set_state(AdminStates.changing_password_new)
+    
+    await query.answer()
+    await query.message.answer(f"🔐 {intern_name} uchun yangi parolni yozing:")
+
+
+@admin_router.message(AdminStates.changing_password_new)
+async def process_password_change(message: Message, state: FSMContext):
+    """Process password change"""
+    new_password = message.text.strip()
+    data = await state.get_data()
+    intern_name = data.get('password_intern')
+    
+    if len(new_password) < 1:
+        await message.answer("❌ Parol bo'sh bo'lishi mumkin emas!")
+        return
+    
+    # Update password
+    if db.set_password(intern_name, new_password):
+        await message.answer(
+            f"✅ Parol o'zgartirildi!\n\n"
+            f"👤 {intern_name}\n"
+            f"🔐 Yangi parol: {new_password}",
+            reply_markup=get_main_keyboard()
+        )
+        db.add_log(message.from_user.id, "password_changed", f"Intern: {intern_name}")
+    else:
+        await message.answer("❌ Parol o'zgartirilmadi", reply_markup=get_main_keyboard())
+    
+    await state.clear()

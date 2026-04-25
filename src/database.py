@@ -82,6 +82,17 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Intern credentials table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS intern_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intern_name TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
         # Submitted reasons table - store reasons entered by interns/users
         cursor.execute('''
@@ -128,6 +139,22 @@ class Database:
             )
         ''')
 
+        # Daily user sessions - keep auth/attendance state once per day
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_date DATE NOT NULL,
+                intern_name TEXT NOT NULL,
+                username TEXT,
+                attendance_confirmed INTEGER DEFAULT 0,
+                attendance_status TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, session_date)
+            )
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -138,6 +165,10 @@ class Database:
         self.ensure_column("work_sessions", "username", "TEXT")
         self.ensure_column("work_sessions", "ended_by_user_id", "INTEGER")
         self.ensure_column("work_sessions", "ended_by_username", "TEXT")
+        self.ensure_column("daily_user_sessions", "attendance_confirmed", "INTEGER DEFAULT 0")
+        self.ensure_column("daily_user_sessions", "attendance_status", "TEXT")
+        self.ensure_column("daily_user_sessions", "username", "TEXT")
+        self.ensure_column("daily_user_sessions", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     
     # REPORTS OPERATIONS
     
@@ -531,6 +562,92 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    # DAILY USER SESSION OPERATIONS
+
+    def upsert_daily_user_session(
+        self,
+        user_id: int,
+        intern_name: str,
+        username: str = None,
+        attendance_confirmed: bool = False,
+        attendance_status: str = None,
+        session_date: date = None
+    ) -> bool:
+        """Create or update today's user session"""
+        if session_date is None:
+            session_date = date.today()
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT INTO daily_user_sessions
+                (user_id, session_date, intern_name, username, attendance_confirmed, attendance_status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, session_date) DO UPDATE SET
+                    intern_name = excluded.intern_name,
+                    username = excluded.username,
+                    attendance_confirmed = CASE
+                        WHEN excluded.attendance_confirmed = 1 THEN 1
+                        ELSE daily_user_sessions.attendance_confirmed
+                    END,
+                    attendance_status = COALESCE(excluded.attendance_status, daily_user_sessions.attendance_status),
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (
+                user_id,
+                session_date,
+                intern_name,
+                username,
+                1 if attendance_confirmed else 0,
+                attendance_status
+            ))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error upserting daily user session: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_daily_user_session(self, user_id: int, session_date: date = None) -> Optional[Dict]:
+        """Get stored daily user session"""
+        if session_date is None:
+            session_date = date.today()
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT * FROM daily_user_sessions
+            WHERE user_id = ? AND session_date = ?
+        ''', (user_id, session_date))
+
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def delete_daily_user_session(self, user_id: int, session_date: date = None) -> bool:
+        """Delete stored daily user session"""
+        if session_date is None:
+            session_date = date.today()
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                DELETE FROM daily_user_sessions
+                WHERE user_id = ? AND session_date = ?
+            ''', (user_id, session_date))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting daily user session: {e}")
+            return False
+        finally:
+            conn.close()
     
     # WORK SESSION OPERATIONS
     
@@ -663,6 +780,69 @@ class Database:
         conn.close()
         
         return row['total'] or 0 if row else 0
+    
+    # CREDENTIALS OPERATIONS
+    
+    def verify_login(self, intern_name: str, password: str) -> bool:
+        """Verify intern credentials"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT password FROM intern_credentials 
+            WHERE intern_name = ?
+        ''', (intern_name,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row['password'] == password:
+            return True
+        return False
+    
+    def set_password(self, intern_name: str, password: str) -> bool:
+        """Set or update intern password"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO intern_credentials (intern_name, password)
+                VALUES (?, ?)
+                ON CONFLICT(intern_name) DO UPDATE SET 
+                    password = ?, updated_at = CURRENT_TIMESTAMP
+            ''', (intern_name, password, password))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error setting password: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def get_intern_credentials(self, intern_name: str) -> Optional[Dict]:
+        """Get intern credentials"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM intern_credentials 
+            WHERE intern_name = ?
+        ''', (intern_name,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    
+    def initialize_all_credentials(self) -> bool:
+        """Initialize credentials for all interns with default password"""
+        try:
+            for intern_name in INTERNS:
+                self.set_password(intern_name, "12345678")
+            return True
+        except Exception as e:
+            print(f"Error initializing credentials: {e}")
+            return False
 
 
 # Global database instance

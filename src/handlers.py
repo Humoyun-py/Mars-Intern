@@ -5,28 +5,25 @@ from datetime import date, datetime
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandStart
 
-from states import InternForm, WorkSession, IssueReport
+from states import AuthForm, InternForm, WorkSession
 from parser import ReportParser, TemplateGenerator
 from database import db
 from keyboards import (
     get_main_keyboard,
-    get_intern_selection_keyboard,
+    get_login_keyboard,
     get_cancel_keyboard,
     get_yes_no_keyboard
 )
 from config import (
     BTN_DARS_KIRITISH,
+    BTN_ISH_TUGATDIM,
     BTN_CANCEL,
-    BTN_ISSUE_REPORT,
-    BTN_ABSENCE_REASON,
     MSG_WELCOME,
-    MSG_SELECT_INTERNSHIP,
     MSG_TEMPLATE_REQUEST,
-    MSG_TEMPLATE_ERROR,
     MSG_SUCCESS,
-    MSG_ABSENCE
+    MSG_ATTENDANCE_CHECK
 )
 from interns import INTERNS
 
@@ -46,94 +43,262 @@ async def notify_admins(bot: Bot, text: str, sender_id: int = None):
             print(f"❌ Admin notification error ({admin_id}): {e}")
 
 
+# ===================== AUTHENTICATION =====================
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    """Handle /start command"""
+    """Handle /start command - restore daily session or ask for login"""
+    await state.clear()
+
+    daily_session = db.get_daily_user_session(message.from_user.id)
+    if daily_session and daily_session.get('attendance_confirmed'):
+        intern_name = daily_session['intern_name']
+        attendance_status = daily_session.get('attendance_status')
+
+        if attendance_status == 'present':
+            await state.update_data(authenticated_intern=intern_name)
+            await message.answer(
+                f"👋 Xush kelibsiz, {intern_name}!\n\n"
+                "Bugungi ro'yxatdan o'tish allaqachon tasdiqlangan.",
+                reply_markup=get_main_keyboard()
+            )
+            return
+
+        await message.answer(
+            f"👋 {intern_name}, bugungi holatingiz allaqachon qayd qilingan: kelmayman.",
+            reply_markup=get_login_keyboard()
+        )
+        return
+
     await message.answer(
-        MSG_WELCOME,
-        reply_markup=get_main_keyboard()
+        "👤 Ism familyasi (login) yuboring:\n\n"
+        "Misol: Ahmadjonov Salohiddin",
+        reply_markup=get_login_keyboard()
     )
+    await state.set_state(AuthForm.waiting_for_login)
+
+
+@router.message(AuthForm.waiting_for_login, F.text == BTN_CANCEL)
+async def cancel_login(message: Message, state: FSMContext):
+    """Cancel login"""
+    await message.answer("Bekor qilindi.")
     await state.clear()
 
 
-@router.message(F.text == "🟢 Ish boshladim")
-async def start_work_session(message: Message, state: FSMContext):
-    """Handle work session start"""
-    await message.answer(
-        "👤 Qaysi intern ish boshlamoqda?",
-        reply_markup=get_intern_selection_keyboard()
-    )
-    await state.set_state(WorkSession.selecting_intern_start)
+@router.message(AuthForm.waiting_for_login, F.text == "🚪 Chiqish")
+async def logout_from_waiting_login(message: Message, state: FSMContext):
+    """Handle logout while waiting for login"""
+    await logout(message, state)
 
 
-@router.message(F.text == "🔴 Ish tugatim")
-async def end_work_session_request(message: Message, state: FSMContext):
-    """Handle work session end request"""
-    await message.answer(
-        "👤 Qaysi intern ish tugatmoqda?",
-        reply_markup=get_intern_selection_keyboard()
-    )
-    await state.set_state(WorkSession.selecting_intern_end)
-
-
-@router.message(WorkSession.selecting_intern_start, F.text.in_(INTERNS))
-async def handle_work_intern_start(message: Message, state: FSMContext):
-    """Handle intern selection for work session start"""
-    intern_name = message.text
+@router.message(AuthForm.waiting_for_login)
+async def process_login(message: Message, state: FSMContext):
+    """Process login (intern name)"""
+    login = message.text.strip()
     
-    # Check if already has active session
-    active_session = db.get_work_session(intern_name)
-    
-    if active_session:
+    # Check if it's a valid intern name
+    if login not in INTERNS:
         await message.answer(
-            f"⚠️ {intern_name} allaqachon ish boshlagani mavjud\n"
-            f"🕐 Boshlanish: {active_session['start_time'][:5]}\n\n"
-            f"Ish tugatish uchun '🔴 Ish tugatim' ni bosing.",
-            reply_markup=get_main_keyboard()
+            "❌ Bu ro'yxatda yo'q.\n\n"
+            "Qayta yuboring yoki \"❌ Bekor qilish\" tugmasini bosing.",
+            reply_markup=get_login_keyboard()
         )
-    else:
-        # Start the session
-        if db.start_work_session(
-            intern_name,
-            user_id=message.from_user.id,
-            username=message.from_user.username or message.from_user.full_name
-        ):
-            # Get today's work sessions to calculate total hours
-            today_sessions = db.get_work_sessions_by_date(date.today())
-            total_minutes = 0
-            
-            for session in today_sessions:
-                if session['intern_name'] == intern_name and session['status'] == 'completed' and session.get('duration_minutes'):
-                    total_minutes += session['duration_minutes']
-            
-            hours = total_minutes // 60
-            minutes = total_minutes % 60
-            
-            work_info = ""
-            if total_minutes > 0:
-                work_info = f"\n📊 Bugun allaqachon: {hours}h {minutes}m"
-            
+        return
+    
+    # Store login and ask for password
+    await state.update_data(login=login)
+    await state.set_state(AuthForm.waiting_for_password)
+    
+    await message.answer(
+        f"🔐 {login} uchun parolni yuboring:",
+        reply_markup=get_login_keyboard()
+    )
+
+
+@router.message(AuthForm.waiting_for_password, F.text == BTN_CANCEL)
+async def cancel_password(message: Message, state: FSMContext):
+    """Cancel password entry"""
+    await message.answer(
+        "👤 Qayta ism familyasi (login) yuboring:",
+        reply_markup=get_login_keyboard()
+    )
+    await state.set_state(AuthForm.waiting_for_login)
+
+
+@router.message(AuthForm.waiting_for_password, F.text == "🚪 Chiqish")
+async def logout_from_waiting_password(message: Message, state: FSMContext):
+    """Handle logout while waiting for password"""
+    await logout(message, state)
+
+
+@router.message(AuthForm.waiting_for_password)
+async def process_password(message: Message, state: FSMContext):
+    """Process password"""
+    password = message.text.strip()
+    data = await state.get_data()
+    login = data.get('login')
+    
+    # Verify credentials
+    if not db.verify_login(login, password):
+        await message.answer(
+            "❌ Parol noto'g'ri.\n\nQayta yuboring.",
+            reply_markup=get_login_keyboard()
+        )
+        return
+    
+    daily_session = db.get_daily_user_session(message.from_user.id)
+    db.upsert_daily_user_session(
+        message.from_user.id,
+        login,
+        username=message.from_user.username or message.from_user.full_name
+    )
+    await state.update_data(authenticated_intern=login)
+
+    if daily_session and daily_session.get('attendance_confirmed'):
+        if daily_session.get('attendance_status') == 'present':
             await message.answer(
-                f"🟢 Ish boshlandi!\n\n"
-                f"👤 {intern_name}\n"
-                f"⏰ Vaqt: {datetime.now().strftime('%H:%M:%S')}{work_info}\n\n"
-                f"Ish tugatish uchun '🔴 Ish tugatim' ni bosing.",
+                f"👋 Xush kelibsiz, {login}!\n\n"
+                "Bugungi ro'yxatdan o'tish allaqachon tasdiqlangan.",
                 reply_markup=get_main_keyboard()
             )
-            db.add_log(message.from_user.id, "work_session_started", f"{intern_name}")
         else:
             await message.answer(
-                "❌ Xato: Ish boshlanmadi",
-                reply_markup=get_main_keyboard()
+                f"👋 {login}, bugungi holatingiz allaqachon qayd qilingan: kelmayman.",
+                reply_markup=get_login_keyboard()
             )
+        db.add_log(message.from_user.id, "login_successful", f"Intern: {login}")
+        return
+
+    # Authentication successful - ask for daily attendance once
+    await state.set_state(AuthForm.confirming_attendance)
+    
+    await message.answer(
+        f"👋 Xush kelibsiz, {login}!\n\n{MSG_ATTENDANCE_CHECK}",
+        reply_markup=get_yes_no_keyboard()
+    )
+    db.add_log(message.from_user.id, "login_successful", f"Intern: {login}")
+
+
+@router.message(AuthForm.confirming_attendance, F.text == "✅ Ha")
+async def confirm_attendance_yes(message: Message, state: FSMContext):
+    """Intern confirmed they are present - auto-start work session"""
+    data = await state.get_data()
+    login = data.get('authenticated_intern')
     
     await state.clear()
+    await state.update_data(authenticated_intern=login)
+    
+    await message.answer(
+        f"✅ Qayd qilindi!\n\n{MSG_WELCOME}",
+        reply_markup=get_main_keyboard()
+    )
+    db.upsert_daily_user_session(
+        message.from_user.id,
+        login,
+        username=message.from_user.username or message.from_user.full_name,
+        attendance_confirmed=True,
+        attendance_status='present'
+    )
+    db.add_log(message.from_user.id, "attendance_confirmed", f"Intern: {login}, Status: Present")
+    
+    # Auto-start work session
+    if db.start_work_session(
+        login,
+        user_id=message.from_user.id,
+        username=message.from_user.username or message.from_user.full_name
+    ):
+        await message.answer(
+            f"🟢 Ish avtomatik boshlandi!\n\n"
+            f"👤 {login}\n"
+            f"⏰ Vaqt: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        db.add_log(message.from_user.id, "auto_work_session_started", f"{login}")
 
 
-@router.message(WorkSession.selecting_intern_end, F.text.in_(INTERNS))
-async def handle_work_intern_end(message: Message, state: FSMContext):
-    """Handle intern selection for work session end"""
-    intern_name = message.text
+@router.message(AuthForm.confirming_attendance, F.text == "❌ Yo'q")
+async def confirm_attendance_no(message: Message, state: FSMContext):
+    """Intern confirmed they are absent"""
+    data = await state.get_data()
+    login = data.get('authenticated_intern')
+    
+    await state.clear()
+    await state.update_data(authenticated_intern=login)
+    
+    await message.answer(
+        f"Yaxshi, bugun kelmayotganingiz qayd qilindi.",
+        reply_markup=get_login_keyboard()
+    )
+    db.upsert_daily_user_session(
+        message.from_user.id,
+        login,
+        username=message.from_user.username or message.from_user.full_name,
+        attendance_confirmed=True,
+        attendance_status='absent'
+    )
+    db.add_log(message.from_user.id, "attendance_confirmed", f"Intern: {login}, Status: Absent")
+
+
+@router.message(AuthForm.confirming_attendance, F.text == "🚪 Chiqish")
+async def logout_from_confirming_attendance(message: Message, state: FSMContext):
+    """Handle logout while confirming attendance"""
+    await logout(message, state)
+
+
+# Helper function to check authentication
+async def check_authentication(state: FSMContext, message: Message) -> str:
+    """Check if user is authenticated, return intern name or None"""
+    data = await state.get_data()
+    authenticated_intern = data.get('authenticated_intern')
+
+    if not authenticated_intern:
+        daily_session = db.get_daily_user_session(message.from_user.id)
+        if daily_session and daily_session.get('attendance_confirmed') and daily_session.get('attendance_status') == 'present':
+            authenticated_intern = daily_session.get('intern_name')
+            await state.update_data(authenticated_intern=authenticated_intern)
+
+    if not authenticated_intern:
+        await message.answer(
+            "❌ Avval bazaviy ro'yxatdan o'ting.\n"
+            "/start ni bosing.",
+            reply_markup=get_login_keyboard()
+        )
+        return None
+    
+    return authenticated_intern
+
+
+# ===================== MAIN MENU =====================
+
+@router.message(F.text == "🚪 Chiqish")
+async def logout(message: Message, state: FSMContext):
+    """Handle logout"""
+    data = await state.get_data()
+    intern_name = data.get('authenticated_intern')
+
+    if not intern_name:
+        daily_session = db.get_daily_user_session(message.from_user.id)
+        if daily_session:
+            intern_name = daily_session.get('intern_name')
+
+    await state.clear()
+    db.delete_daily_user_session(message.from_user.id)
+    await message.answer(
+        f"👋 Xayr, {intern_name}!\n\n"
+        "Qaytadan kirish uchun /start ni bosing.",
+        reply_markup=get_login_keyboard()
+    )
+    if intern_name:
+        db.add_log(message.from_user.id, "logout", f"Intern: {intern_name}")
+
+
+# ===================== WORK SESSION =====================
+
+@router.message(F.text.in_({BTN_ISH_TUGATDIM, "🔴 Ish tugatim"}))
+async def end_work_session(message: Message, state: FSMContext):
+    """Handle work session end"""
+    intern_name = await check_authentication(state, message)
+    if not intern_name:
+        return
     
     active_session = db.get_work_session(intern_name)
     
@@ -147,10 +312,13 @@ async def handle_work_intern_end(message: Message, state: FSMContext):
             start_time = datetime.fromisoformat(active_session['start_time'])
             end_time = datetime.now()
             duration = int((end_time - start_time).total_seconds() / 60)
+            hours = duration // 60
+            minutes = duration % 60
             
             await message.answer(
                 f"✅ Ish tugatildi!\n\n"
-                f"👤 {intern_name}\n",
+                f"👤 {intern_name}\n"
+                f"⏱️ Vaqt: {hours}h {minutes}m\n",
                 reply_markup=get_main_keyboard()
             )
             db.add_log(message.from_user.id, "work_session_ended", f"{intern_name}: {duration}min")
@@ -161,50 +329,21 @@ async def handle_work_intern_end(message: Message, state: FSMContext):
             )
     else:
         await message.answer(
-            f"❌ {intern_name} uchun faol ish sessiyasi topilmadi",
+            f"❌ Faol ish sessiyasi topilmadi",
             reply_markup=get_main_keyboard()
         )
-    
-    await state.clear()
 
 
-@router.message(WorkSession.selecting_intern_start, F.text == BTN_CANCEL)
-@router.message(WorkSession.selecting_intern_end, F.text == BTN_CANCEL)
-async def cancel_work_selection(message: Message, state: FSMContext):
-    """Cancel work session selection"""
-    await message.answer(
-        "Bekor qilindi.",
-        reply_markup=get_main_keyboard()
-    )
-    await state.clear()
-
+# ===================== LESSON ENTRY =====================
 
 @router.message(F.text == BTN_DARS_KIRITISH)
 async def btn_dars_kiritish(message: Message, state: FSMContext):
-    """Handle 'Dars kiritish' button - ask user to select name"""
-    await message.answer(
-        MSG_SELECT_INTERNSHIP,
-        reply_markup=get_intern_selection_keyboard()
-    )
-    await state.set_state(InternForm.selecting_name)
-
-
-@router.message(InternForm.selecting_name, F.text == BTN_CANCEL)
-async def cancel_selection(message: Message, state: FSMContext):
-    """Cancel name selection"""
-    await message.answer(
-        "Bekor qilindi. Bosh menyudan boshlang.",
-        reply_markup=get_main_keyboard()
-    )
-    await state.clear()
-
-
-@router.message(InternForm.selecting_name, F.text.in_(INTERNS))
-async def select_intern(message: Message, state: FSMContext):
-    """Handle intern name selection"""
-    intern_name = message.text
+    """Handle 'Dars kiritish' button"""
+    intern_name = await check_authentication(state, message)
+    if not intern_name:
+        return
     
-    await state.update_data(intern_name=intern_name)
+    await state.update_data(authenticated_intern=intern_name, intern_name=intern_name)
     await state.set_state(InternForm.waiting_for_report)
     
     template = TemplateGenerator.generate_template()
@@ -218,15 +357,6 @@ async def select_intern(message: Message, state: FSMContext):
     )
 
 
-@router.message(InternForm.selecting_name)
-async def invalid_selection(message: Message, state: FSMContext):
-    """Handle invalid name selection"""
-    await message.answer(
-        "❌ Iltimos, ro'yxatdan birini tanlang yoki '❌ Bekor qilish' tugmasini bosing.",
-        reply_markup=get_intern_selection_keyboard()
-    )
-
-
 @router.message(InternForm.waiting_for_report, F.text == BTN_CANCEL)
 async def cancel_report(message: Message, state: FSMContext):
     """Cancel report submission"""
@@ -234,7 +364,13 @@ async def cancel_report(message: Message, state: FSMContext):
         "Bekor qilindi. Bosh menyudan boshlang.",
         reply_markup=get_main_keyboard()
     )
-    await state.clear()
+    await state.set_state(None)
+
+
+@router.message(InternForm.waiting_for_report, F.text == "🚪 Chiqish")
+async def logout_from_waiting_report(message: Message, state: FSMContext):
+    """Handle logout while waiting for report"""
+    await logout(message, state)
 
 
 @router.message(InternForm.waiting_for_report)
@@ -261,14 +397,14 @@ async def process_report(message: Message, state: FSMContext):
         )
         return
     
-    # Get stored intern name
+    # Get authenticated intern name
     data = await state.get_data()
-    stored_intern_name = data.get('intern_name')
+    authenticated_intern = data.get('authenticated_intern')
     
     # Verify intern name matches
-    if parsed_data['intern_name'] != stored_intern_name:
+    if parsed_data['intern_name'] != authenticated_intern:
         await message.answer(
-            f"❌ Tanlovangiz: {stored_intern_name}\n"
+            f"❌ Tanlovangiz: {authenticated_intern}\n"
             f"Shaklondagi: {parsed_data['intern_name']}\n\n"
             f"Nomlar mos kelmadi. Qayta urinib ko'ring.",
             reply_markup=get_cancel_keyboard()
@@ -317,11 +453,8 @@ async def confirm_report(message: Message, state: FSMContext):
             "❌ Hisobot ma'lumotlari yo'q. Qayta boshlang.",
             reply_markup=get_main_keyboard()
         )
-        await state.clear()
+        await state.set_state(None)
         return
-    
-    # Debug print
-    print(f"📝 Saving report: {parsed_report}")
     
     # Save to database
     success = db.add_report(parsed_report)
@@ -338,14 +471,14 @@ async def confirm_report(message: Message, state: FSMContext):
             reply_markup=get_main_keyboard()
         )
     
-    await state.clear()
+    await state.set_state(None)
 
 
 @router.message(InternForm.confirming_report, F.text == "❌ Yo'q")
 async def reject_report(message: Message, state: FSMContext):
     """Reject and re-submit"""
     data = await state.get_data()
-    stored_intern_name = data.get('intern_name')
+    authenticated_intern = data.get('authenticated_intern')
     
     template = TemplateGenerator.generate_template()
     
@@ -359,185 +492,29 @@ async def reject_report(message: Message, state: FSMContext):
     await state.set_state(InternForm.waiting_for_report)
 
 
-@router.message(IssueReport.writing_issue, F.text == BTN_CANCEL)
-async def cancel_issue_report(message: Message, state: FSMContext):
-    """Cancel issue reporting"""
-    await message.answer(
-        "Bekor qilindi. Bosh menyudan boshlang.",
-        reply_markup=get_main_keyboard()
-    )
-    await state.clear()
+@router.message(InternForm.confirming_report, F.text == "🚪 Chiqish")
+async def logout_from_confirming_report(message: Message, state: FSMContext):
+    """Handle logout while confirming report"""
+    await logout(message, state)
 
 
-@router.message(IssueReport.writing_issue)
-async def process_issue_report(message: Message, state: FSMContext):
-    """Process and save issue report"""
-    issue_reason = message.text.strip()
-    
-    # Save issue to database
-    try:
-        user_id = message.from_user.id
-        username = message.from_user.username or "N/A"
-        
-        # Store in database
-        db.add_submitted_reason(
-            user_id=user_id,
-            username=username,
-            reason_type="issue",
-            reason_text=issue_reason,
-            reason_date=date.today()
-        )
-        db.add_log(user_id, "issue_reported", f"Issue: {issue_reason}")
-        admin_header = (
-            "⚠️ User paneldan yangi muammo keldi\n\n"
-            f"👤 User ID: {user_id}\n"
-        )
-        if username != "N/A":
-            admin_header += f"🔗 Username: @{username}\n"
-        await notify_admins(message.bot, admin_header + f"\n📝 Matn:\n{issue_reason}", sender_id=user_id)
-        
-        await message.answer(
-            f"✅ Muammo qayd qilindi!\n\n"
-            f"📝 Sababingiz admin tomonidan ko'rib chiqiladi.\n"
-            f"Rahmat!",
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        await message.answer(
-            f"❌ Xato: {str(e)}\n\nIltimos, qayta urinib ko'ring.",
-            reply_markup=get_cancel_keyboard()
-        )
-    
-    await state.clear()
+# ===================== FALLBACK =====================
 
-
-@router.message(InternForm.selecting_intern_for_absence, F.text.in_(INTERNS))
-async def select_intern_for_absence(message: Message, state: FSMContext):
-    """Handle intern selection for absence reason"""
-    intern_name = message.text
-    
-    await state.update_data(intern_name=intern_name)
-    await state.set_state(InternForm.writing_absence_reason)
-    
-    await message.answer(
-        f"{intern_name} uchun yo'q sababini yozing:\n\n"
-        f"Misol: Kasallandi, shaxsiy sabab, transport muammosi va h.k.",
-        reply_markup=get_cancel_keyboard()
-    )
-
-
-@router.message(InternForm.selecting_intern_for_absence, F.text == BTN_CANCEL)
-async def cancel_absence_intern_selection(message: Message, state: FSMContext):
-    """Cancel absence intern selection"""
-    await message.answer(
-        "Bekor qilindi. Bosh menyudan boshlang.",
-        reply_markup=get_main_keyboard()
-    )
-    await state.clear()
-
-
-@router.message(InternForm.selecting_intern_for_absence)
-async def invalid_absence_selection(message: Message, state: FSMContext):
-    """Handle invalid intern selection for absence"""
-    await message.answer(
-        "❌ Iltimos, ro'yxatdan birini tanlang yoki '❌ Bekor qilish' tugmasini bosing.",
-        reply_markup=get_intern_selection_keyboard()
-    )
-
-
-@router.message(InternForm.writing_absence_reason, F.text == BTN_CANCEL)
-async def cancel_absence_reason(message: Message, state: FSMContext):
-    """Cancel absence reason entry"""
-    await message.answer(
-        "Bekor qilindi. Bosh menyudan boshlang.",
-        reply_markup=get_main_keyboard()
-    )
-    await state.clear()
-
-
-@router.message(InternForm.writing_absence_reason)
-async def process_absence_reason(message: Message, state: FSMContext):
-    """Process and save absence reason"""
-    reason = message.text.strip()
-    
-    data = await state.get_data()
-    intern_name = data.get('intern_name')
-    
-    absence_data = {
-        'intern_name': intern_name,
-        'date': date.today(),
-        'arrival_time': '',
-        'departure_time': '',
-        'lessons': [],
-        'status': 'Kelmadi',
-        'absence_reason': reason,
-        'user_id': message.from_user.id,
-        'username': message.from_user.username or message.from_user.full_name,
-        'raw_text': reason
-    }
-    
-    try:
-        db.add_report(absence_data)
-        db.add_submitted_reason(
-            user_id=message.from_user.id,
-            username=message.from_user.username or "N/A",
-            intern_name=intern_name,
-            reason_type="absence",
-            reason_text=reason,
-            reason_date=date.today()
-        )
-        await notify_admins(
-            message.bot,
-            "📩 User paneldan yo'q sabab kiritildi\n\n"
-            f"👤 {intern_name}\n"
-            f"📅 {date.today().strftime('%d.%m.%Y')}\n"
-            f"❌ Sabab: {reason}",
-            sender_id=message.from_user.id
-        )
-        
-        await message.answer(
-            f"✅ Qayd qilindi!\n\n"
-            f"👤 {intern_name}\n"
-            f"📅 {date.today().strftime('%d.%m.%Y')}\n"
-            f"❌ Yo'q sababi: {reason}\n\n"
-            f"Rahmat!",
-            reply_markup=get_main_keyboard()
-        )
-        db.add_log(message.from_user.id, "absence_reported", f"Intern: {intern_name}, Reason: {reason}")
-    except Exception as e:
-        await message.answer(
-            f"❌ Xato: {str(e)}\n\nIltimos, qayta urinib ko'ring.",
-            reply_markup=get_cancel_keyboard()
-        )
-    
-    await state.clear()
-
-
-@router.message(F.text == BTN_ISSUE_REPORT, StateFilter(None))
-async def start_issue_report(message: Message, state: FSMContext):
-    """Start issue reporting flow"""
-    await message.answer(
-        "⚠️ Muammoni yozing:",
-        reply_markup=get_cancel_keyboard()
-    )
-    await state.set_state(IssueReport.writing_issue)
-
-
-@router.message(F.text == BTN_ABSENCE_REASON, StateFilter(None))
-async def start_absence_reason_flow(message: Message, state: FSMContext):
-    """Start absence reason flow"""
-    await message.answer(
-        "👤 Qaysi intern uchun yo'q sababi kiritiladi?",
-        reply_markup=get_intern_selection_keyboard()
-    )
-    await state.set_state(InternForm.selecting_intern_for_absence)
-
-
-@router.message(StateFilter(None))
+@router.message()
 async def echo(message: Message, state: FSMContext):
-    """Handle unknown messages only when no state is active"""
-    await message.answer(
-        "❌ Noto'g'ri buyruq.\n\n"
-        "Bosh menyudan tanlang:",
-        reply_markup=get_main_keyboard()
-    )
+    """Handle unknown messages"""
+    data = await state.get_data()
+    authenticated_intern = data.get('authenticated_intern')
+    
+    if not authenticated_intern:
+        await message.answer(
+            "❌ Avval bazaviy ro'yxatdan o'ting.\n"
+            "/start ni bosing.",
+            reply_markup=get_login_keyboard()
+        )
+    else:
+        await message.answer(
+            "❌ Noto'g'ri buyruq.\n\n"
+            "Bosh menyudan tanlang:",
+            reply_markup=get_main_keyboard()
+        )
